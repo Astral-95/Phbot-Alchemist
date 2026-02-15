@@ -38,15 +38,15 @@ ddEquipment = QtBind.createCombobox(gui, 110, 48, 158, 20)
 
 QtBind.createLabel(gui, 'Select Stat:', 20, 75)
 ddStatType = QtBind.createCombobox(gui, 110, 75, 158, 20)
-for stat in sorted(STONE_NAMES.keys()):
+for stat in STONE_NAMES.keys():
     QtBind.append(gui, ddStatType, stat)
-QtBind.setText(gui, ddStatType, "Phy Dmg") # Default selection
+QtBind.setText(gui, ddStatType, "Phy Atk") # Default selection
 
 QtBind.createLabel(gui, 'Target %:', 20, 100)
 ddTargetPerc = QtBind.createCombobox(gui, 110, 100, 158, 20)
 for perc in ["0%", "20%", "40%", "60%", "80%", "100%"]:
     QtBind.append(gui, ddTargetPerc, perc)
-QtBind.setText(gui, ddTargetPerc, "60%") # Default selection
+QtBind.setText(gui, ddTargetPerc, "80%") # Default selection
 
 btnStart = QtBind.createButton(gui, 'btnStart_clicked', '           START           ', 20, 140)
 
@@ -57,7 +57,7 @@ QtBind.setEnabled(gui, btnStop, False) # Default state
 
 def refresh_items():
     global item_slots
-    # Clear the dropdown and our internal tracker
+
     QtBind.clear(gui, ddEquipment)
     item_slots = {}
     
@@ -66,11 +66,12 @@ def refresh_items():
     
     for slot in range(13, len(items)):
         item = items[slot]
+
+        if not item:
+            continue
         
-        # Filter: Exists, has a name, and is equipment (Durability > 0)
-        if item and item['name'] and item['durability'] > 0:
-            # We skip stackables (Potions/Arrows) by checking if quantity is 1 
-            # (Stones also have quantity 1, but they don't have durability)
+        s_name = item['servername']
+        if s_name.startswith("ITEM_CH") or s_name.startswith("ITEM_EU"):
             display_name = f"{item['name']} (Slot {slot})"
             item_slots[display_name] = slot
             QtBind.append(gui, ddEquipment, display_name)
@@ -141,10 +142,11 @@ def Fuse():
     stone_name = STONE_NAMES[selected_stat]
 
     inventory = get_inventory()
+    items = inventory['items']
     stone_slot_index = -1
-    for slot, item in enumerate(inventory['items']):
+    for slot, item in enumerate(items):
         if item and stone_name.lower() in item['name'].lower():
-            stone_slot_index = slot + 0
+            stone_slot_index = slot
             break
     
     if stone_slot_index == -1:
@@ -168,20 +170,25 @@ def check_result_event():
             
             for line in reversed(lines):
                 if "Alchemy Stone:" in line and "->" in line:
-                    match = re.search(r'->\s*\[(\d+)%\]', line)
-                    if match:
-                        val = int(match.group(1))
-                        target = int(QtBind.text(gui, ddTargetPerc).replace("%",""))
-                        
-                        if val >= target:
-                            log("Plugin: Goal Reached!")
-                            Stop()
-                        else:
-                            Fuse()
+
+                    if "Failed" in line:
+                        stop()
                         return
-                    else:
-                        log("Plugin: Re error")
-                        Stop()
+                    
+                    # 2. Check if it's a success with a value update
+                    if "->" in line:
+                        match = re.search(r'->\s*\[(\d+)%\]', line)
+                        if match:
+                            val = int(match.group(1))
+                            target_text = QtBind.text(gui, ddTargetPerc).replace("%","")
+                            target = int(target_text)
+                            
+                            if val >= target:
+                                log("Plugin: Goal Reached!")
+                                Stop()
+                            else:
+                                Fuse()
+                            return
     except Exception as e:
         Stop()
         log("Plugin: Log Error: {e}")
