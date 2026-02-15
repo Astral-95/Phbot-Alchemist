@@ -1,7 +1,5 @@
 from phBot import *
-import struct
 import QtBind
-import json
 import os
 from threading import Timer
 from time import sleep
@@ -15,7 +13,7 @@ STONE_NAMES = {
     "Mag Atk": "Attribute stone of philosophy",
     "Phy Def": "Attribute stone of flesh",
     "Mag Def": "Attribute stone of mind",
-    "Phy Atk Reinforce": "Attribute stone of warrior",
+    "Phy Atk Reinforce": "Attribute stone of warriors",
     "Mag Atk Reinforce": "Attribute stone of meditation",
     "Attack Rate": "Attribute stone of focus",
     "Critical": "Attribute stone of challenge",
@@ -25,6 +23,14 @@ STONE_NAMES = {
 }
 
 IsRunning = False
+
+LastLogPosition = 0
+
+FailCount = 0
+MaxFailCount = 3
+
+ResultNotFoundCount = 0
+MaxResultNotFoundCount = 10
 
 gui = QtBind.init(__name__,pName)
 
@@ -94,11 +100,15 @@ def update_ui_states(running):
 # --- Button Logic ---
 def btnStart_clicked():
     global IsRunning
+    global FailCount
+    global ResultNotFoundCount
     if not IsRunning:
         IsRunning = True
+        FailCount = 0
+        ResultNotFoundCount = 0
         update_ui_states(True)
         log('Plugin: Started.')
-        Fuse()
+        Fuse(True)
 
 def btnStop_clicked():
     global IsRunning
@@ -126,15 +136,21 @@ def get_log_path():
     
     return log_file
 
-def Fuse():
+def Fuse(ResFound):
     global IsRunning
+    global ResultNotFoundCount
     if not IsRunning: return
+
+    if ResFound:
+        ResultNotFoundCount = 0
+    else:
+        ResultNotFoundCount += 1
 
     # 1. Get the Gear Slot
     equipment_slot_index = get_selected_item_slot()
     if equipment_slot_index == -1:
         log("Plugin: No equipment selected! Refresh and pick an item.")
-        stop()
+        Stop()
         return
 
     # 1. Get the current selection from the UI
@@ -151,7 +167,7 @@ def Fuse():
     
     if stone_slot_index == -1:
         log(f"Plugin: Stopped: No '{stone_name}' found!")
-        stop()
+        Stop()
         return
 
     data = bytearray([0x02, 0x05, 0x02, equipment_slot_index, stone_slot_index])
@@ -159,39 +175,91 @@ def Fuse():
 
 def check_result_event():
     global IsRunning
+    global LastLogPosition
+    global FailCount
+    global MaxFailCount
+
+    global ResultNotFoundCount
+    global MaxResultNotFoundCount
+    
     if not IsRunning: return
 
     path = get_log_path()
     try:
+        current_FileSize = os.path.getsize(path)
+
+        # If size hasn't changed, don't even open the file.    
+        if current_FileSize <= LastLogPosition:
+            if ResultNotFoundCount < MaxResultNotFoundCount:
+                Fuse(False) # We assume the stat did not change here so we continue fusing.
+            else:
+                log(f"Plugin: Stopping due to new alchemy result not being found {ResultNotFoundCount} times in a row.")
+                Stop()
+                return
+            return
+
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            f.seek(0, os.SEEK_END)
-            f.seek(max(0, f.tell() - 2000)) # Read last n chars
-            lines = f.readlines()
+            # Jump to the last byte we read
+            f.seek(LastLogPosition)
+
+            # 1. Read everything new
+            new_chunk = f.read()
+
+            # 2. Update the bookmark to the EXACT current end of the file
+            # This ensures only new logs are read next time unless file is updated externally.
+            # So if you update the file, reload the plugin
+            LastLogPosition = f.tell()
+
+            lines = new_chunk.splitlines()
             
             for line in reversed(lines):
-                if "Alchemy Stone:" in line and "->" in line:
+                if "Alchemy Stone:" not in line:
+                    continue
+                
+                if "Failed" not in line:
+                    FailCount = 0
+                else:
+                    FailCount += 1
+                    if FailCount < MaxFailCount:
+                        Fuse(True)
+                    else:
+                        log(f"Plugin: Stopping due to alchemy failing {FailCount} times in a row.")
+                        Stop()
+                    return
+                
+                if "->" not in line:
+                    log("Plugin: Stopping due to encountering an unexpected path.")
+                    Stop()
+                    return
 
-                    if "Failed" in line:
-                        stop()
-                        return
-                    
-                    # 2. Check if it's a success with a value update
-                    if "->" in line:
-                        match = re.search(r'->\s*\[(\d+)%\]', line)
-                        if match:
-                            val = int(match.group(1))
-                            target_text = QtBind.text(gui, ddTargetPerc).replace("%","")
-                            target = int(target_text)
-                            
-                            if val >= target:
-                                log("Plugin: Goal Reached!")
-                                Stop()
-                            else:
-                                Fuse()
-                            return
+                match = re.search(r'->\s*\[(\d+)%\]', line)
+                if not match:
+                    log("Plugin: Stopping due regex failure.")
+                    Stop()
+                    return
+                
+                val = int(match.group(1))
+                target_text = QtBind.text(gui, ddTargetPerc).replace("%","")
+                target = int(target_text)
+
+                if val < target:
+                    Fuse(True)
+                else:
+                    log("Plugin: Goal Reached!")
+                    Stop()
+                return
+
+            # Below is for when the code for size comparison above fails due to bot logging other stuff.
+            if ResultNotFoundCount >= MaxResultNotFoundCount:
+                log(f"Plugin: Stopping due to new alchemy result not being found {ResultNotFoundCount} times in a row.")
+                Stop()
+                return
+
+            Fuse(False) # We assume the stat did not change here so we continue fusing.
+
     except Exception as e:
         Stop()
-        log("Plugin: Log Error: {e}")
+        log(f"Plugin: Ex: {e}")
         
 def handle_joymax(opcode, data):
     global IsRunning
